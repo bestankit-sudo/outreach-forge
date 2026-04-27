@@ -3,3 +3,4 @@ export * from "./apollo/index.js";
 export * from "./brave/index.js";
 export * from "./scraper/index.js";
 export * from "./llm/index.js";
+export * from "./ai/index.js";
