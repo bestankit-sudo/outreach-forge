@@ -25,9 +25,8 @@ Given a list of companies (or websites), the pipeline:
 
 ## Status of this repo
 
-- [x] Repo scaffolded
-- [ ] Phase A: utils ported
-- [ ] Phase B: API clients (Apollo, Brave, scraper, LLM wrapper)
+- [x] Phase A: scaffold + utils ported (logger, rate-limiter, url, name-parser)
+- [x] Phase B: API clients (Apollo, Brave, scraper, LLM wrapper)
 - [ ] Phase C: AI gates parameterized
 - [ ] Phase D: Dedup core
 - [ ] Phase E: Notion helpers + standard schema
