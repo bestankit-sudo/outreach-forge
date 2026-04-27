@@ -28,7 +28,7 @@ Given a list of companies (or websites), the pipeline:
 - [x] Phase A: scaffold + utils ported (logger, rate-limiter, url, name-parser)
 - [x] Phase B: API clients (Apollo, Brave, scraper, LLM wrapper)
 - [x] Phase C: AI gates parameterized (8 gates with `RoleContext` parameter)
-- [ ] Phase D: Dedup core
+- [x] Phase D: Dedup core (scoring, grouping, planMerge, dedupByKey)
 - [ ] Phase E: Notion helpers + standard schema
 - [ ] Phase F: Pipeline orchestrator
 - [ ] v0.1: Podsque beans shipped on this library
