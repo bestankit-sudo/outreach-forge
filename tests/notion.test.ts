@@ -3,6 +3,7 @@ import {
   titleProp,
   richTextProp,
   urlProp,
+  emailProp,
   selectProp,
   numberProp,
   relationProp,
@@ -17,6 +18,10 @@ import {
   PERSON_BASE_SCHEMA,
   EXTRACTION_BASE_SCHEMA,
   setupEnrichmentDatabases,
+  setupEnrichmentDatabasesIdempotent,
+  withRowErrorIsolation,
+  personEnrichmentConfidence,
+  companyEnrichmentConfidence,
   type NotionPage,
   type NotionService,
 } from "../src/index.js";
@@ -60,6 +65,91 @@ describe("property builders", () => {
   it("truncateForNotion enforces max length", () => {
     expect(truncateForNotion("abc", 10)).toBe("abc");
     expect(truncateForNotion("a".repeat(20), 10)).toBe("aaaaaaa...");
+  });
+
+  it("emailProp drops values longer than 100 chars (Notion's hard cap)", () => {
+    // 95 + "@x.com" (6 chars) = 101 chars → over the cap, drop.
+    expect(emailProp("a".repeat(95) + "@x.com")).toEqual({ email: null });
+    // 94 + "@x.com" (6 chars) = 100 chars → exactly at the cap, keep.
+    const at_cap = "a".repeat(94) + "@x.com";
+    expect(at_cap.length).toBe(100);
+    expect(emailProp(at_cap)).toEqual({ email: at_cap });
+    expect(emailProp("ok@example.com")).toEqual({ email: "ok@example.com" });
+    expect(emailProp(null)).toEqual({ email: null });
+    expect(emailProp("")).toEqual({ email: null });
+  });
+});
+
+describe("withRowErrorIsolation", () => {
+  it("collects ok and failed without aborting", async () => {
+    const result = await withRowErrorIsolation([1, 2, 3, 4, 5], async (n) => {
+      if (n === 3) throw new Error("boom");
+      return n * 10;
+    });
+    expect(result.ok).toEqual([10, 20, 40, 50]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].row).toBe(3);
+    expect(result.failed[0].index).toBe(2);
+    expect(result.failed[0].error.message).toBe("boom");
+  });
+
+  it("calls onError for each failure", async () => {
+    const onError = vi.fn();
+    await withRowErrorIsolation(
+      ["a", "b"],
+      async () => { throw new Error("nope"); },
+      { onError },
+    );
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it("respects maxFailures cap", async () => {
+    const result = await withRowErrorIsolation(
+      [1, 2, 3, 4, 5],
+      async () => { throw new Error("always"); },
+      { maxFailures: 2 },
+    );
+    expect(result.failed).toHaveLength(2);
+    expect(result.ok).toEqual([]);
+  });
+});
+
+describe("enrichment confidence helpers", () => {
+  it("personEnrichmentConfidence maps entityMatch correctly", () => {
+    expect(personEnrichmentConfidence({ entityMatch: "exact" })).toBe("high");
+    expect(personEnrichmentConfidence({ entityMatch: "subsidiary" })).toBe("medium");
+    expect(personEnrichmentConfidence({ entityMatch: "parent" })).toBe("medium");
+    expect(personEnrichmentConfidence({ entityMatch: "unrelated" })).toBe("low");
+  });
+
+  it("companyEnrichmentConfidence returns low when apolloOrg is null", () => {
+    expect(
+      companyEnrichmentConfidence({
+        apolloOrg: null,
+        requestedDomain: "acme.com",
+      }),
+    ).toBe("low");
+  });
+
+  it("companyEnrichmentConfidence returns high when domains normalize-equal", () => {
+    const apolloOrg = { primary_domain: "acme.com", name: "Acme" } as never;
+    expect(
+      companyEnrichmentConfidence({
+        apolloOrg,
+        requestedDomain: "https://www.Acme.com/",
+      }),
+    ).toBe("high");
+  });
+
+  it("companyEnrichmentConfidence returns medium when only name overlaps", () => {
+    const apolloOrg = { primary_domain: "acme-coffee.com", name: "Acme Coffee" } as never;
+    expect(
+      companyEnrichmentConfidence({
+        apolloOrg,
+        requestedDomain: "acme.com",
+        requestedName: "Acme",
+      }),
+    ).toBe("medium");
   });
 });
 
@@ -236,5 +326,57 @@ describe("setupEnrichmentDatabases", () => {
     const extractionProps = createDatabase.mock.calls[2][0].properties as Record<string, { relation?: { database_id?: string } }>;
     expect(extractionProps["Company"].relation?.database_id).toBe("db1");
     expect(extractionProps["Person"].relation?.database_id).toBe("db2");
+  });
+});
+
+describe("setupEnrichmentDatabasesIdempotent", () => {
+  function mockNotionWithChildren(children: Array<{ id: string; title: string }>) {
+    let nextId = 100;
+    const createDatabase = vi.fn().mockImplementation(async () => ({ id: `new${nextId++}` }));
+    const updateDatabase = vi.fn().mockResolvedValue(undefined);
+    const childrenList = vi.fn().mockResolvedValue({
+      results: children.map((c) => ({ id: c.id, type: "child_database", child_database: { title: c.title } })),
+      has_more: false,
+      next_cursor: null,
+    });
+    const raw = { blocks: { children: { list: childrenList } } };
+    return {
+      service: { createDatabase, updateDatabase, raw } as unknown as NotionService,
+      createDatabase,
+      childrenList,
+    };
+  }
+
+  it("reuses existing 3 databases without creating new ones", async () => {
+    const { service, createDatabase } = mockNotionWithChildren([
+      { id: "existing-1", title: "Acme — Companies Enriched" },
+      { id: "existing-2", title: "Acme — People Enriched" },
+      { id: "existing-3", title: "Acme — Extractions" },
+    ]);
+
+    const ids = await setupEnrichmentDatabasesIdempotent({
+      notion: service,
+      parentPageId: "parent",
+      projectName: "Acme",
+    });
+
+    expect(createDatabase).not.toHaveBeenCalled();
+    expect(ids).toEqual({
+      companyDbId: "existing-1",
+      peopleDbId: "existing-2",
+      extractionsDbId: "existing-3",
+    });
+  });
+
+  it("falls through to fresh setup when none of the DBs exist", async () => {
+    const { service, createDatabase } = mockNotionWithChildren([]);
+
+    await setupEnrichmentDatabasesIdempotent({
+      notion: service,
+      parentPageId: "parent",
+      projectName: "Acme",
+    });
+
+    expect(createDatabase).toHaveBeenCalledTimes(3);
   });
 });

@@ -4,11 +4,14 @@ import {
   revealByLinkedIn,
   searchOrganisation,
   enrichOrganisation,
+  searchOrganisationsList,
   type ApolloOrganisation,
   type ApolloOrgFromReveal,
+  type ApolloOrgListResult,
   type ApolloPerson,
   type ApolloSearchResult,
   type PeopleSearchParams,
+  type SearchOrganisationsListParams,
 } from "../apollo/client.js";
 import type { ExtractionsDb } from "../notion/extractions-db.js";
 import type { CostTracker } from "./cost-tracker.js";
@@ -98,6 +101,36 @@ export class WrappedApollo {
       });
     }
     return org;
+  }
+
+  /**
+   * Free, paginated list-search via Apollo's `mixed_companies/search`.
+   * No credit cost (so {@link CostTracker} is not touched), but the call
+   * is logged to the Extractions audit log if one is configured.
+   *
+   * Returns an empty array in dry-run.
+   */
+  async searchOrganisationsList(params: SearchOrganisationsListParams): Promise<ApolloOrgListResult[]> {
+    if (this.d.dryRun) return [];
+    const results = await searchOrganisationsList(this.d.apiKey, params);
+    if (this.d.extractions) {
+      const keywords = Array.isArray(params.keyword) ? params.keyword.join(", ") : params.keyword;
+      await this.d.extractions.create({
+        title: `Apollo list-search: ${keywords}`,
+        type: "company",
+        source: "apollo_search",
+        status: "raw",
+        creditsUsed: 0,
+        sourceQuery: keywords,
+        rawData: JSON.stringify({
+          countries: params.countries ?? [],
+          foundedYearMin: params.foundedYearMin ?? null,
+          industryTagIds: params.industryTagIds ?? [],
+          count: results.length,
+        }),
+      });
+    }
+    return results;
   }
 
   async enrichOrganisation(params: { domain?: string; name?: string }): Promise<ApolloOrgFromReveal | null> {

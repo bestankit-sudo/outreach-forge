@@ -147,4 +147,43 @@ describe("runEnrichment", () => {
     expect(items).toHaveLength(3);
     void ids;
   });
+
+  it("calls lookupExisting once per item before process", async () => {
+    const items = [{ key: "a" }, { key: "b" }];
+    const lookupExisting = vi.fn(async (k: string) => (k === "a" ? "page-a" : null));
+    const seen: Array<[string, string | null]> = [];
+
+    await runEnrichment({
+      items,
+      dedupKey: (item) => item.key,
+      lookupExisting,
+      process: async (item, _ctx, existingPageId) => {
+        seen.push([item.key, existingPageId]);
+      },
+    });
+
+    expect(lookupExisting).toHaveBeenCalledTimes(2);
+    expect(seen).toEqual([
+      ["a", "page-a"],
+      ["b", null],
+    ]);
+  });
+
+  it("treats lookupExisting errors as no match (does not abort the row)", async () => {
+    const items = [{ key: "a" }];
+    const seen: Array<string | null> = [];
+
+    await runEnrichment({
+      items,
+      dedupKey: (item) => item.key,
+      lookupExisting: async () => {
+        throw new Error("notion 5xx");
+      },
+      process: async (_item, _ctx, existingPageId) => {
+        seen.push(existingPageId);
+      },
+    });
+
+    expect(seen).toEqual([null]);
+  });
 });

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   scoreSearchCandidates,
+  scoreSearchCandidatesDetailed,
+  confidenceFromEntityMatch,
   validatePersonAtCompany,
   validateDataQuality,
   disambiguateEntity,
@@ -91,6 +93,60 @@ describe("scoreSearchCandidates", () => {
   });
 });
 
+describe("scoreSearchCandidatesDetailed", () => {
+  it("flags parseFailed when LLM returns malformed JSON", async () => {
+    const llm = mockLLM("not json at all");
+    const candidates: ApolloSearchResult[] = [
+      { id: "1", first_name: "A", title: "VP", organization_name: "Acme", has_email: true },
+    ];
+
+    const result = await scoreSearchCandidatesDetailed(llm, candidates, {
+      targetCompanyName: "Acme",
+      role: ROLE,
+      maxReveals: 1,
+    });
+
+    expect(result.parseFailed).toBe(true);
+    expect(result.scores).toHaveLength(1);
+    expect(result.scores[0].reason).toMatch(/AI scoring failed/);
+  });
+
+  it("does not flag parseFailed on a clean parse", async () => {
+    const llm = mockLLM('[{"id":"1","worthRevealing":true,"reason":"Good fit"}]');
+    const candidates: ApolloSearchResult[] = [
+      { id: "1", first_name: "A", title: "VP", organization_name: "Acme", has_email: true },
+    ];
+
+    const result = await scoreSearchCandidatesDetailed(llm, candidates, {
+      targetCompanyName: "Acme",
+      role: ROLE,
+    });
+
+    expect(result.parseFailed).toBe(false);
+    expect(result.scores).toEqual([{ id: "1", worthRevealing: true, reason: "Good fit" }]);
+  });
+
+  it("returns parseFailed=false on empty input (no LLM call)", async () => {
+    const chat = vi.fn();
+    const llm = { chat } as unknown as LLMClient;
+    const result = await scoreSearchCandidatesDetailed(llm, [], {
+      targetCompanyName: "Acme",
+      role: ROLE,
+    });
+    expect(result).toEqual({ scores: [], parseFailed: false });
+    expect(chat).not.toHaveBeenCalled();
+  });
+});
+
+describe("confidenceFromEntityMatch", () => {
+  it("maps entity matches to confidence buckets", () => {
+    expect(confidenceFromEntityMatch("exact")).toBe("high");
+    expect(confidenceFromEntityMatch("subsidiary")).toBe("medium");
+    expect(confidenceFromEntityMatch("parent")).toBe("medium");
+    expect(confidenceFromEntityMatch("unrelated")).toBe("low");
+  });
+});
+
 describe("validatePersonAtCompany", () => {
   it("rejects person with no name without calling LLM", async () => {
     const chat = vi.fn();
@@ -130,6 +186,18 @@ describe("validatePersonAtCompany", () => {
 
     expect(result.valid).toBe(true);
     expect(result.entityMatch).toBe("exact");
+    expect(result.confidence).toBe("high");
+  });
+
+  it("derives medium confidence for subsidiary/parent verdicts", async () => {
+    const llm = mockLLM('{"valid":true,"reason":"Owned subsidiary","entityMatch":"subsidiary"}');
+    const result = await validatePersonAtCompany(llm, APOLLO_PERSON, {
+      companyName: "Acme Coffee",
+      domain: "acme.com",
+    }, ROLE);
+
+    expect(result.entityMatch).toBe("subsidiary");
+    expect(result.confidence).toBe("medium");
   });
 });
 

@@ -1,5 +1,6 @@
 import { Client } from "@notionhq/client";
-import { RequestQueue, sleep } from "../utils/rate-limiter.js";
+import { RequestQueue, sleep, withExponentialBackoff } from "../utils/rate-limiter.js";
+import { logger } from "../utils/logger.js";
 
 type NotionFilter = Record<string, unknown>;
 
@@ -24,24 +25,53 @@ export class NotionService {
   }
 
   private async runNotionCall<T>(fn: () => Promise<T>): Promise<T> {
-    return this.queue.schedule(async () => {
-      while (true) {
-        try {
-          return await fn();
-        } catch (error) {
-          if (this.isRateLimit(error)) {
-            await sleep(this.getRetryAfterMs(error));
-            continue;
+    return this.queue.schedule(() =>
+      withExponentialBackoff(
+        async () => {
+          while (true) {
+            try {
+              return await fn();
+            } catch (error) {
+              if (this.isRateLimit(error)) {
+                await sleep(this.getRetryAfterMs(error));
+                continue;
+              }
+              throw error;
+            }
           }
-          throw error;
-        }
-      }
-    });
+        },
+        {
+          retries: 3,
+          initialDelayMs: 1000,
+          maxDelayMs: 10_000,
+          shouldRetry: (err) => {
+            const retry = this.isTransient(err);
+            if (retry) {
+              const code = (err as { code?: string }).code ?? "unknown";
+              const status = (err as { status?: number }).status ?? "unknown";
+              logger.warn(`[notion] transient error (code=${code}, status=${status}) — retrying`);
+            }
+            return retry;
+          },
+        },
+      ),
+    );
   }
 
   private isRateLimit(error: unknown): boolean {
     const v = error as { code?: string; status?: number };
     return v?.status === 429 || v?.code === "rate_limited";
+  }
+
+  private isTransient(error: unknown): boolean {
+    const v = error as { code?: string; status?: number };
+    if (v?.code === "notionhq_client_request_timeout") return true;
+    if (v?.code === "notionhq_client_response_error" && (v?.status === 502 || v?.status === 503 || v?.status === 504)) {
+      return true;
+    }
+    if (v?.status === 502 || v?.status === 503 || v?.status === 504) return true;
+    if (v?.status === 429 || v?.code === "rate_limited") return true;
+    return false;
   }
 
   private getRetryAfterMs(error: unknown): number {
@@ -131,6 +161,36 @@ export class NotionService {
         properties: args.properties as never,
       }),
     );
+  }
+
+  /**
+   * Add a two-way (synced) relation between `sourceDbId` and `targetDbId`.
+   *
+   * Wraps Notion's `databases.update` `dual_property` shape so callers don't
+   * have to remember the (under-documented) JSON layout. The synced reverse
+   * property appears on `targetDbId` with `syncedPropertyName` as its title.
+   *
+   * Idempotent on Notion's side: calling twice keeps the existing relation.
+   */
+  async linkDatabases(args: {
+    sourceDbId: string;
+    targetDbId: string;
+    propertyName: string;
+    syncedPropertyName: string;
+  }): Promise<void> {
+    await this.updateDatabase({
+      databaseId: args.sourceDbId,
+      properties: {
+        [args.propertyName]: {
+          type: "relation",
+          relation: {
+            database_id: args.targetDbId,
+            type: "dual_property",
+            dual_property: { synced_property_name: args.syncedPropertyName },
+          },
+        },
+      },
+    });
   }
 
   private async getPropertyType(dbId: string, propertyName: string): Promise<string | null> {

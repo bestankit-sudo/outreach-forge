@@ -47,11 +47,39 @@ Before installing, make sure you have:
 
 1. **Node 20+**
 2. **A Notion integration** — go to [notion.so/my-integrations](https://www.notion.so/my-integrations), click "+ New integration", copy the secret. This is your `NOTION_API_KEY`.
-3. **A Notion page** that will become the parent of the 3 enrichment databases. Create one in your workspace, then in the page header click the "..." menu → "Connections" → add your integration. Copy the page ID from its URL (the 32-char string after the last dash).
+3. **A Notion page** that will become the parent of the 3 enrichment databases. Create one **manually in the Notion UI** (most internal integrations cannot create top-level pages — Notion's API rejects with `creating workspace-level private pages is not supported`). Then in the page header click the "..." menu → "Connections" → add your integration. Copy the page ID from its URL (the 32-char string after the last dash).
 4. **API keys** for:
-   - **Apollo** ([apollo.io](https://app.apollo.io/)) — paid; people search is free, reveals cost 1 credit each
+   - **Apollo** ([apollo.io](https://app.apollo.io/)) — paid; people search is free, reveals cost 1 credit each, list-search via `mixed_companies/search` is free (deep-pages cap at ~5 × 100 = 500 results per query)
    - **Brave Search** ([brave.com/search/api](https://brave.com/search/api/)) — free tier available
    - An **OpenAI-compatible LLM endpoint** — see "Bring your own LLM" below
+
+### Sharing one secrets file across projects
+
+If you run multiple enrichment projects, store API keys once and layer them via a shared file. Add to your project's `.env`:
+
+```bash
+SECRETS_ENV_PATH=~/.config/env-variables/secrets.env
+```
+
+Then in your project's bootstrap:
+
+```ts
+import { config as loadDotenv } from "dotenv";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+
+loadDotenv();
+const secretsPath = process.env.SECRETS_ENV_PATH;
+if (secretsPath) {
+  const expanded = secretsPath.startsWith("~")
+    ? path.join(homedir(), secretsPath.slice(1))
+    : secretsPath;
+  if (existsSync(expanded)) loadDotenv({ path: expanded, override: false });
+}
+```
+
+The project-local `.env` overrides shared secrets, so per-project values still win.
 
 ---
 
@@ -106,7 +134,7 @@ This creates three databases under your parent page:
 | `My Project — People Enriched` | One row per discovered contact. Name, LinkedIn, email, evidence. |
 | `My Project — Extractions` | Audit log. One row per Apollo/Brave/scrape call with credits used. |
 
-**Save the returned IDs as env vars** — re-running `setupEnrichmentDatabases` creates duplicates (it's not idempotent).
+**Save the returned IDs as env vars.** Re-running `setupEnrichmentDatabases` creates duplicates (it's not idempotent). For idempotent re-runs use `setupEnrichmentDatabasesIdempotent` — it looks up the 3 DBs by their canonical titles under the parent page and reuses them when all 3 already exist.
 
 ### 2. Run an enrichment
 
@@ -262,12 +290,32 @@ await notion.createPage(process.env.PEOPLE_DB_ID!, {
   "Apollo Person ID": richTextProp(person.id),
   "Work Emails": richTextProp(person.email),
   "Job Title": richTextProp(person.title),
-  "Match Confidence": selectProp("high"),
+  "Enrichment Confidence": selectProp("high"),
   "Discovery Method": selectProp("apollo"),
   "Linked Company": relationProp(companyPageId),
   "Last Enriched At": dateProp(new Date().toISOString()),
 });
 ```
+
+### Per-row write isolation for bulk jobs
+
+A single bad row (over-100-char email, malformed select, transient validation error) will abort an entire batch if writes are inline. Wrap bulk writes:
+
+```ts
+import { withRowErrorIsolation } from "outreach-forge";
+
+const { ok, failed } = await withRowErrorIsolation(rows, async (row, idx) => {
+  return notion.createPage(peopleDbId, {
+    "Full Name": titleProp(row.name),
+    "Work Emails": richTextProp(row.email ?? ""),
+  });
+});
+
+console.log(`${ok.length} written, ${failed.length} failed`);
+for (const f of failed) console.warn(`row ${f.index}: ${f.error.message}`);
+```
+
+`emailProp` already drops > 100-char values silently to avoid this footgun, but other property types may surprise you — wrap.
 
 The standard schema field names are documented below. Use whatever subset your project needs.
 
@@ -277,13 +325,13 @@ The standard schema field names are documented below. Use whatever subset your p
 
 ### Companies Enriched
 
-`Company Name` (title) · `Company Domain` (url) · `Company Description` (rich_text) · `Industry` (rich_text) · `Employee Count` (number) · `Founded Year` (number) · `Total Funding` (rich_text) · `Funding Stage` (rich_text) · `LinkedIn Company URL` (url) · `X URL` (url) · `Instagram URL` (url) · `Facebook URL` (url) · `YouTube URL` (url) · `TikTok URL` (url) · `Generic Business Email` (email) · `Contact Form URL` (url) · `Company Phone` (rich_text) · `Company Country` (rich_text) · `HQ City` (rich_text) · `Apollo Organisation ID` (rich_text) · `Best Outreach Path` (rich_text) · `Company Outreach Readiness` (select) · `Enrichment Status` (select) · `Match Confidence` (select) · `Source Notes` (rich_text) · `Last Checked At` (date)
+`Company Name` (title) · `Company Domain` (url) · `Company Description` (rich_text) · `Industry` (rich_text) · `Employee Count` (number) · `Founded Year` (number) · `Total Funding` (rich_text) · `Funding Stage` (rich_text) · `LinkedIn Company URL` (url) · `X URL` (url) · `Instagram URL` (url) · `Facebook URL` (url) · `YouTube URL` (url) · `TikTok URL` (url) · `Generic Business Email` (email) · `Contact Form URL` (url) · `Company Phone` (rich_text) · `Company Country` (rich_text) · `HQ City` (rich_text) · `Apollo Organisation ID` (rich_text) · `Best Outreach Path` (rich_text) · `Company Outreach Readiness` (select) · `Enrichment Status` (select) · `Enrichment Confidence` (select) · `Source Notes` (rich_text) · `Last Checked At` (date)
 
 Plus relations: `All People`, `Best Person`, `Extractions`.
 
 ### People Enriched
 
-`Full Name` (title) · `First Name` · `Last Name` · `Job Title` · `Headline` · `LinkedIn Person URL` (url) · `Apollo Person ID` · `Work Emails` · `Email Status` · `City` · `Country` · `Discovery Method` (select: apollo/serp_fallback/manual) · `Match Confidence` (select) · `Evidence Summary` · `Match Notes` · `Candidate Rank` (number) · `Is Primary Candidate` (checkbox) · `Enrich Status` (select) · `Last Enriched At` (date)
+`Full Name` (title) · `First Name` · `Last Name` · `Job Title` · `Headline` · `LinkedIn Person URL` (url) · `Apollo Person ID` · `Work Emails` · `Email Status` · `City` · `Country` · `Discovery Method` (select: apollo/serp_fallback/manual) · `Enrichment Confidence` (select) · `Evidence Summary` · `Match Notes` · `Candidate Rank` (number) · `Is Primary Candidate` (checkbox) · `Enrich Status` (select) · `Last Enriched At` (date)
 
 Plus relations: `Linked Company`, `Extractions`.
 
@@ -367,23 +415,23 @@ Run dedup once with `Apollo Person ID` as the key, again with `linkedinUrlKey`, 
 
 Single import root: `outreach-forge`.
 
-**Utilities:** `logger`, `sleep`, `RequestQueue`, `withExponentialBackoff`, `extractDomain`, `normalizeUrl`, `parseFounderName`, `parseFounderNames`
+**Utilities:** `logger`, `sleep`, `RequestQueue`, `withExponentialBackoff`, `extractDomain`, `normalizeUrl`, `normalizeDomain`, `normalizeBrandName`, `BRAND_NAME_SUFFIX_TOKENS`, `parseFounderName`, `parseFounderNames`
 
-**Apollo:** `searchPeopleMetadata`, `revealPerson`, `revealByLinkedIn`, `searchOrganisation`, `enrichOrganisation`, `isBlockedDomain` · types: `ApolloSearchResult`, `ApolloPerson`, `ApolloOrgFromReveal`, `ApolloOrganisation`, `PeopleSearchParams`
+**Apollo:** `searchPeopleMetadata`, `revealPerson`, `revealByLinkedIn`, `searchOrganisation`, `enrichOrganisation`, `searchOrganisationsList`, `isBlockedDomain`, `BLOCKED_DOMAINS`, `ApolloFilterError` · types: `ApolloSearchResult`, `ApolloPerson`, `ApolloOrgFromReveal`, `ApolloOrganisation`, `ApolloOrgListResult`, `PeopleSearchParams`, `SearchOrganisationsListParams`
 
-**Brave:** `findLinkedInProfiles`, `searchSerp` · types: `FounderName`, `SerpCandidate`
+**Brave:** `findLinkedInProfiles`, `searchSerp`, `simplifyCompanyName` · types: `FounderName`, `SerpCandidate`
 
 **Scraper:** `scrapeWebsite` · types: `WebsiteScrapeResult`
 
 **LLM:** `LLMClient` · types: `LLMConfig`, `ChatMessage`, `ChatOptions`
 
-**AI gates:** `scoreSearchCandidates`, `validatePersonAtCompany`, `scoreRevealedCandidates`, `validateDataQuality`, `disambiguateEntity`, `decideMerge`, `generateOutreachBrief`, `generateCompanySummary` · types: `RoleContext`, `Confidence`, `EntityMatch`, `ValidationResult`, `DisambiguationResult`, `PreliminaryScore`, `CandidateScore`, `DataQualityResult`, `MergeDecision`
+**AI gates:** `scoreSearchCandidates`, `scoreSearchCandidatesDetailed`, `validatePersonAtCompany`, `scoreRevealedCandidates`, `validateDataQuality`, `disambiguateEntity`, `decideMerge`, `generateOutreachBrief`, `generateCompanySummary`, `confidenceFromEntityMatch` · types: `RoleContext`, `Confidence`, `EntityMatch`, `ValidationResult`, `DisambiguationResult`, `PreliminaryScore`, `ScoreCandidatesResult`, `CandidateScore`, `DataQualityResult`, `MergeDecision`
 
 **Dedup:** `scoreRecord`, `defaultPersonScoringRubric`, `groupByKey`, `linkedinUrlKey`, `planMerge`, `isFalsy`, `unionArrays`, `dedupByKey` · types: `ScoringRule`, `ScoringRubric`, `MergeRule`, `MergeSpec`, `DedupResult`
 
-**Notion:** `NotionService`, all property builders (`titleProp` · `richTextProp` · `urlProp` · `emailProp` · `numberProp` · `selectProp` · `multiSelectProp` · `checkboxProp` · `dateProp` · `relationProp` · `fileProp` · `truncateForNotion`), all readers (`getTitle` · `getRichText` · `getUrl` · `getEmail` · `getSelect` · `getMultiSelect` · `getDate` · `getNumber` · `getCheckbox` · `getRelationIds` · `getTextOrUrl`), `COMPANY_BASE_SCHEMA` · `PERSON_BASE_SCHEMA` · `EXTRACTION_BASE_SCHEMA` · `buildNotionPropertyConfig` · `buildNotionPropertiesDict` · `setupEnrichmentDatabases` · `ExtractionsDb` · types: `NotionPage`, `SchemaProperty`, `SchemaDef`, `EnrichmentDatabaseIds`, `SetupOptions`, `CompanyEnrichment`, `PersonEnrichment`, `Extraction`, all enum types
+**Notion:** `NotionService`, all property builders (`titleProp` · `richTextProp` · `urlProp` · `emailProp` · `numberProp` · `selectProp` · `multiSelectProp` · `checkboxProp` · `dateProp` · `relationProp` · `fileProp` · `truncateForNotion`), all readers (`getTitle` · `getRichText` · `getUrl` · `getEmail` · `getSelect` · `getMultiSelect` · `getDate` · `getNumber` · `getCheckbox` · `getRelationIds` · `getTextOrUrl`), `COMPANY_BASE_SCHEMA` · `PERSON_BASE_SCHEMA` · `EXTRACTION_BASE_SCHEMA` · `buildNotionPropertyConfig` · `buildNotionPropertiesDict` · `setupEnrichmentDatabases` · `setupEnrichmentDatabasesIdempotent` · `ExtractionsDb` · `withRowErrorIsolation` · `personEnrichmentConfidence` · `companyEnrichmentConfidence` · types: `NotionPage`, `SchemaProperty`, `SchemaDef`, `EnrichmentDatabaseIds`, `SetupOptions`, `CompanyEnrichment`, `PersonEnrichment`, `Extraction`, `EnrichmentConfidence`, `MatchConfidence` (alias), `RowErrorIsolationResult`, `RowErrorIsolationOptions`, all enum types
 
-**Pipeline:** `runEnrichment`, `CostTracker`, `WrappedApollo`, `WrappedBrave`, `WrappedScraper` · types: `RunContext`, `RunStats`, `RunOptions`
+**Pipeline:** `runEnrichment`, `runEnrichmentFromNotion`, `enrichCompanyWithSocials`, `CostTracker`, `WrappedApollo`, `WrappedBrave`, `WrappedScraper` · types: `RunContext`, `RunStats`, `RunOptions`, `RunEnrichmentFromNotionOptions`, `EnrichmentOutcome`, `CompanyEnrichmentWithSocials`
 
 ---
 
@@ -392,9 +440,25 @@ Single import root: `outreach-forge`.
 - LinkedIn properties: **"LinkedIn Person URL"** (not "Linkedin Person Url")
 - Apollo organisation ID uses British spelling: **"Apollo Organisation ID"**
 - Status enum values: `pending` · `done` · `partial` · `failed` · `needs_review`
+- HITL extension values (consumer-defined select options): `discovered` · `approved` · `rejected`
 - Confidence enum values: `high` · `medium` · `low`
+- Confidence property is **"Enrichment Confidence"** (renamed from "Match Confidence" in v0.1.x — the old name conflated entity-match-for-People with data-quality-for-Companies)
 
 These names appear in your Notion databases. Don't override them in extensions or your code won't read what the library writes.
+
+---
+
+## Common scrape failure modes
+
+When using the default axios scraper, expect ~10–15% of sites to fail. The failure shows up in `WebsiteScrapeResult.sourceNotes` so you can branch on it:
+
+- **`Website blocked (status 403)` / `(status 503)`** — Cloudflare-style fingerprint block. Recoverable via a stealth/headless provider (e.g. Firecrawl). About 13% of sites in our measured runs.
+- **`getaddrinfo ENOTFOUND`** — domain doesn't resolve. Permanent. No tool can recover.
+- **`certificate has expired` / cert hostname mismatch** — sometimes recoverable via a proxying provider that doesn't enforce strict TLS.
+- **`timeout of 10000ms exceeded`** — slow or dead site.
+- **`Skipped non-HTML content-type: application/pdf`** (etc.) — server returned a binary; nothing to parse.
+
+The scraper never throws on these — it returns `{ fetched: false, sourceNotes }` so a single bad URL doesn't kill a batch.
 
 ---
 
@@ -408,7 +472,7 @@ These names appear in your Notion databases. Don't override them in extensions o
 - [x] Phase F: Pipeline orchestrator
 - [ ] **v0.1: first real project shipped on the library** — that's the next milestone
 
-86 tests, 0 vulnerabilities. Run `npm test` to verify.
+115 tests, 0 vulnerabilities. Run `npm test` to verify.
 
 ---
 

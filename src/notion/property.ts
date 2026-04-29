@@ -10,8 +10,13 @@ export const urlProp = (value: string | null | undefined): { url: string | null 
   url: value || null,
 });
 
+/**
+ * Notion's `email` field caps at 100 chars; passing 101+ throws
+ * `body failed validation: ... .email.length should be ≤ 100` and aborts the
+ * write. Drop oversized values silently rather than poison the batch.
+ */
 export const emailProp = (value: string | null | undefined): { email: string | null } => ({
-  email: value || null,
+  email: value && value.length <= 100 ? value : null,
 });
 
 export const numberProp = (value: number | null | undefined): { number: number | null } => ({

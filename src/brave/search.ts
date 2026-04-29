@@ -18,8 +18,11 @@ const BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 
 const LINKEDIN_IN_REGEX = /https?:\/\/(www\.)?linkedin\.com\/in\/[^/"'\s?#]+/gi;
 
-function simplifyCompanyName(name: string): string {
+export function simplifyCompanyName(name: string): string {
   return name
+    // Curly → straight apostrophes. Brave returns 0 hits for curly variants
+    // that the same query handles fine after normalization (e.g. "L'OR Espresso").
+    .replace(/[‘’]/g, "'")
     .replace(/\s*\(.*?\)\s*/g, " ")
     .replace(/\b(Inc\.?|LLC|Ltd\.?|Co\.?|Corp\.?|Pty|GmbH|S\.?A\.?|formerly)\b/gi, "")
     .replace(/[,;]+/g, "")
@@ -83,7 +86,7 @@ function extractLinkedInUrls(results: Array<{ url?: string; title?: string }>): 
 export async function findLinkedInProfiles(
   apiKey: string,
   companyName: string,
-  founders: FounderName[],
+  founders: FounderName[] = [],
 ): Promise<SerpCandidate[]> {
   if (!companyName) return [];
 

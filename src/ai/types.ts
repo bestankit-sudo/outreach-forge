@@ -27,6 +27,12 @@ export type ValidationResult = {
   valid: boolean;
   reason: string;
   entityMatch: EntityMatch;
+  /**
+   * Derived from `entityMatch`: exact → high, subsidiary|parent → medium,
+   * unrelated → low. Lifted into the lib so every consumer doesn't reinvent
+   * the same mapping when persisting Match Confidence to their store.
+   */
+  confidence: Confidence;
 };
 
 export type DisambiguationResult = {
@@ -39,6 +45,17 @@ export type PreliminaryScore = {
   id: string;
   worthRevealing: boolean;
   reason: string;
+};
+
+/**
+ * Detailed return shape for `scoreSearchCandidatesDetailed`. Surfaces a
+ * `parseFailed` flag so callers can distinguish "all candidates rejected" from
+ * "LLM returned malformed JSON" — the legacy `PreliminaryScore[]` API
+ * collapsed both into an empty array.
+ */
+export type ScoreCandidatesResult = {
+  scores: PreliminaryScore[];
+  parseFailed: boolean;
 };
 
 export type CandidateScore = {

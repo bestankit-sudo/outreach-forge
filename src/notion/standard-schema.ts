@@ -67,7 +67,7 @@ export const COMPANY_BASE_SCHEMA: SchemaDef = {
     ],
   },
   "Enrichment Status": { type: "select", options: [...STATUS_OPTIONS] },
-  "Match Confidence": { type: "select", options: [...CONFIDENCE_OPTIONS] },
+  "Enrichment Confidence": { type: "select", options: [...CONFIDENCE_OPTIONS] },
   "Source Notes": { type: "rich_text" },
   "Last Checked At": { type: "date" },
 };
@@ -93,7 +93,7 @@ export const PERSON_BASE_SCHEMA: SchemaDef = {
       { name: "manual", color: "gray" },
     ],
   },
-  "Match Confidence": { type: "select", options: [...CONFIDENCE_OPTIONS] },
+  "Enrichment Confidence": { type: "select", options: [...CONFIDENCE_OPTIONS] },
   "Evidence Summary": { type: "rich_text" },
   "Match Notes": { type: "rich_text" },
   "Candidate Rank": { type: "number" },

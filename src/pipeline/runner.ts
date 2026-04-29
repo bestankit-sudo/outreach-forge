@@ -27,7 +27,13 @@ export type RunStats = {
 
 export type RunOptions<T> = {
   items: T[];
-  process: (item: T, ctx: RunContext) => Promise<void>;
+  /**
+   * Per-item callback. Receives the item, the run context, and an optional
+   * `existingPageId` resolved by {@link RunOptions.lookupExisting} (or `null`
+   * if no lookup hook is wired). Use the existing page ID to upsert instead
+   * of always creating.
+   */
+  process: (item: T, ctx: RunContext, existingPageId: string | null) => Promise<void>;
   /** Defaults to a numeric index. Override to surface meaningful identifiers in logs. */
   identify?: (item: T) => string;
   /** Required for any apollo.* calls. */
@@ -40,6 +46,21 @@ export type RunOptions<T> = {
   dryRun?: boolean;
   /** Throws when total Apollo credits used would exceed this number. */
   maxApolloCredits?: number;
+  /**
+   * Build a stable dedup key for an item (e.g. normalised domain or brand
+   * name). Required for {@link RunOptions.lookupExisting} to fire.
+   */
+  dedupKey?: (item: T) => string;
+  /**
+   * Resolve a key to an existing Notion page ID, or `null` when none exists.
+   * Called once per item before {@link RunOptions.process}; the result is
+   * passed to `process` as the third argument.
+   *
+   * Typical implementation: query the Companies DB by domain/name and
+   * return the first hit's page ID. Errors here are logged and treated as
+   * "no existing page" so the run continues.
+   */
+  lookupExisting?: (key: string, item: T) => Promise<string | null>;
 };
 
 /**
@@ -95,7 +116,21 @@ export async function runEnrichment<T>(options: RunOptions<T>): Promise<RunStats
 
     try {
       log("starting");
-      await options.process(item, ctx);
+      let existingPageId: string | null = null;
+      if (options.dedupKey && options.lookupExisting) {
+        const key = options.dedupKey(item);
+        if (key) {
+          try {
+            existingPageId = await options.lookupExisting(key, item);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log(`lookupExisting threw — treating as no match (${msg})`);
+            existingPageId = null;
+          }
+          if (existingPageId) log(`found existing page ${existingPageId} for key "${key}"`);
+        }
+      }
+      await options.process(item, ctx, existingPageId);
       succeeded += 1;
       log("done");
     } catch (error) {

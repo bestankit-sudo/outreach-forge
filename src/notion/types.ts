@@ -4,7 +4,9 @@
  */
 
 export type EnrichmentStatus = "pending" | "done" | "partial" | "failed" | "needs_review";
-export type MatchConfidence = "high" | "medium" | "low";
+export type EnrichmentConfidence = "high" | "medium" | "low";
+/** @deprecated Use {@link EnrichmentConfidence}. Kept as an alias for type-only consumers. */
+export type MatchConfidence = EnrichmentConfidence;
 export type DiscoveryMethod = "apollo" | "serp_fallback" | "manual";
 export type CompanyOutreachReadiness = "pending" | "ready_person" | "ready_form" | "ready_email" | "blocked";
 
@@ -36,7 +38,7 @@ export type CompanyEnrichment = {
   bestOutreachPath: string;
   outreachReadiness: CompanyOutreachReadiness;
   status: EnrichmentStatus;
-  matchConfidence: MatchConfidence;
+  enrichmentConfidence: EnrichmentConfidence;
   sourceNotes: string;
   lastCheckedAt: string;
 };
@@ -54,7 +56,7 @@ export type PersonEnrichment = {
   city: string;
   country: string;
   discoveryMethod: DiscoveryMethod;
-  matchConfidence: MatchConfidence;
+  enrichmentConfidence: EnrichmentConfidence;
   evidenceSummary: string;
   matchNotes: string;
   candidateRank: number | null;

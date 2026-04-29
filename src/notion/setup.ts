@@ -1,4 +1,5 @@
 import { logger } from "../utils/logger.js";
+import type { Client } from "@notionhq/client";
 import type { NotionService } from "./client.js";
 import {
   COMPANY_BASE_SCHEMA,
@@ -105,4 +106,90 @@ export async function setupEnrichmentDatabases(options: SetupOptions): Promise<E
     peopleDbId: peopleDb.id,
     extractionsDbId: extractionsDb.id,
   };
+}
+
+type ChildDbBlock = {
+  id: string;
+  type?: string;
+  child_database?: { title?: string };
+};
+
+async function findChildDatabasesByTitle(
+  notion: NotionService,
+  parentPageId: string,
+  titles: string[],
+): Promise<Record<string, string>> {
+  const wantedSet = new Set(titles);
+  const found: Record<string, string> = {};
+  const client = notion.raw as Client;
+  let cursor: string | undefined;
+  do {
+    const response = (await client.blocks.children.list({
+      block_id: parentPageId,
+      start_cursor: cursor,
+      page_size: 100,
+    })) as { results: ChildDbBlock[]; has_more: boolean; next_cursor: string | null };
+
+    for (const block of response.results) {
+      if (block.type !== "child_database") continue;
+      const title = block.child_database?.title?.trim() ?? "";
+      if (wantedSet.has(title)) {
+        found[title] = block.id;
+      }
+    }
+    cursor = response.has_more ? response.next_cursor ?? undefined : undefined;
+  } while (cursor);
+  return found;
+}
+
+/**
+ * Idempotent variant of {@link setupEnrichmentDatabases}. Looks up the 3
+ * databases by their canonical titles under `parentPageId`; reuses them if
+ * all 3 exist, otherwise falls through to the create flow.
+ *
+ * Use this in consumer setup scripts so re-running doesn't create duplicate
+ * Notion databases (a common, expensive footgun).
+ *
+ * NOTE: only checks for the *base* DBs by title — it does NOT migrate
+ * extensions or schema diffs. If you change `companyExtensions`,
+ * `peopleExtensions`, or rename any field, run a separate migration.
+ */
+export async function setupEnrichmentDatabasesIdempotent(
+  options: SetupOptions,
+): Promise<EnrichmentDatabaseIds> {
+  const prefix = options.projectName ? `${options.projectName} — ` : "";
+  const titles = {
+    company: `${prefix}Companies Enriched`,
+    people: `${prefix}People Enriched`,
+    extractions: `${prefix}Extractions`,
+  };
+
+  const found = await findChildDatabasesByTitle(
+    options.notion,
+    options.parentPageId,
+    Object.values(titles),
+  );
+
+  if (
+    found[titles.company] &&
+    found[titles.people] &&
+    found[titles.extractions]
+  ) {
+    logger.info("[setup] All 3 enrichment DBs already exist under parent — reusing.");
+    return {
+      companyDbId: found[titles.company],
+      peopleDbId: found[titles.people],
+      extractionsDbId: found[titles.extractions],
+    };
+  }
+
+  if (Object.keys(found).length > 0) {
+    logger.warn(
+      `[setup] Found ${Object.keys(found).length}/3 expected DBs under parent — ` +
+        "running fresh setup will create duplicates of the missing ones. " +
+        "Either move the existing partial DBs out, or pass their IDs directly.",
+    );
+  }
+
+  return setupEnrichmentDatabases(options);
 }

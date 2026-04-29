@@ -35,11 +35,17 @@ export {
   buildNotionPropertiesDict,
 } from "./standard-schema.js";
 export type { SchemaProperty, SchemaDef } from "./standard-schema.js";
-export { setupEnrichmentDatabases } from "./setup.js";
+export {
+  setupEnrichmentDatabases,
+  setupEnrichmentDatabasesIdempotent,
+} from "./setup.js";
 export type { EnrichmentDatabaseIds, SetupOptions } from "./setup.js";
 export { ExtractionsDb } from "./extractions-db.js";
+export { withRowErrorIsolation } from "./batch.js";
+export type { RowErrorIsolationResult, RowErrorIsolationOptions } from "./batch.js";
 export type {
   EnrichmentStatus,
+  EnrichmentConfidence,
   MatchConfidence,
   DiscoveryMethod,
   CompanyOutreachReadiness,
@@ -51,3 +57,7 @@ export type {
   ExtractionStatus,
   Extraction,
 } from "./types.js";
+export {
+  personEnrichmentConfidence,
+  companyEnrichmentConfidence,
+} from "./enrichment-confidence.js";

@@ -1,2 +1,2 @@
-export { findLinkedInProfiles, searchSerp } from "./search.js";
+export { findLinkedInProfiles, searchSerp, simplifyCompanyName } from "./search.js";
 export type { FounderName, SerpCandidate } from "./search.js";

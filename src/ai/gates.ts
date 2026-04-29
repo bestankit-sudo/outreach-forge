@@ -6,11 +6,17 @@ import type {
   Confidence,
   DataQualityResult,
   DisambiguationResult,
+  EntityMatch,
   MergeDecision,
   PreliminaryScore,
   RoleContext,
+  ScoreCandidatesResult,
   ValidationResult,
 } from "./types.js";
+
+export function confidenceFromEntityMatch(match: EntityMatch): Confidence {
+  return match === "exact" ? "high" : match === "unrelated" ? "low" : "medium";
+}
 
 function isValidLinkedInUrl(url: string): boolean {
   if (!url) return false;
@@ -30,7 +36,19 @@ function extractJson<T>(text: string, kind: "object" | "array"): T | null {
 
 // ─── 1. Preliminary Score (cheap pass over Apollo search metadata) ───
 
-export async function scoreSearchCandidates(
+/**
+ * Detailed variant of {@link scoreSearchCandidates} that surfaces a
+ * `parseFailed` flag so callers can distinguish "LLM rejected everything"
+ * from "LLM returned malformed JSON".
+ *
+ * Recommended over the legacy `scoreSearchCandidates` for new consumers — the
+ * latter loses the parser-failure signal by collapsing it to an empty array.
+ *
+ * On parse failure, returns top-N candidates as a fail-open default
+ * (`worthRevealing: true`, with a reason flagging that AI scoring failed) so
+ * a single LLM hiccup doesn't silently kill a discovery run.
+ */
+export async function scoreSearchCandidatesDetailed(
   llm: LLMClient,
   candidates: ApolloSearchResult[],
   options: {
@@ -38,8 +56,8 @@ export async function scoreSearchCandidates(
     role: RoleContext;
     maxReveals?: number;
   },
-): Promise<PreliminaryScore[]> {
-  if (candidates.length === 0) return [];
+): Promise<ScoreCandidatesResult> {
+  if (candidates.length === 0) return { scores: [], parseFailed: false };
 
   const maxReveals = options.maxReveals ?? 2;
   const { targetCompanyName, role } = options;
@@ -69,16 +87,38 @@ Reply JSON ONLY — array of ALL candidates with the keys exactly as shown:
     );
 
     const parsed = extractJson<PreliminaryScore[]>(text, "array");
-    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed)) return { scores: parsed, parseFailed: false };
     throw new Error("No JSON array returned");
   } catch (error) {
     logger.warn(`[ai] scoreSearchCandidates failed: ${error instanceof Error ? error.message : "unknown"}`);
-    return candidates.slice(0, maxReveals).map((c) => ({
-      id: c.id,
-      worthRevealing: true,
-      reason: "AI scoring failed — revealing top candidates",
-    }));
+    return {
+      scores: candidates.slice(0, maxReveals).map((c) => ({
+        id: c.id,
+        worthRevealing: true,
+        reason: "AI scoring failed — revealing top candidates",
+      })),
+      parseFailed: true,
+    };
   }
+}
+
+/**
+ * Legacy shape: returns `PreliminaryScore[]` only. Prefer
+ * {@link scoreSearchCandidatesDetailed} for new code so callers can detect
+ * LLM parse failures and avoid acting on an empty array as if the gate
+ * legitimately rejected every candidate.
+ */
+export async function scoreSearchCandidates(
+  llm: LLMClient,
+  candidates: ApolloSearchResult[],
+  options: {
+    targetCompanyName: string;
+    role: RoleContext;
+    maxReveals?: number;
+  },
+): Promise<PreliminaryScore[]> {
+  const result = await scoreSearchCandidatesDetailed(llm, candidates, options);
+  return result.scores;
 }
 
 // ─── 2. Validate person works at target company ───
@@ -90,10 +130,20 @@ export async function validatePersonAtCompany(
   context: RoleContext,
 ): Promise<ValidationResult> {
   if (!person.name && !person.first_name) {
-    return { valid: false, reason: "No name returned by Apollo", entityMatch: "unrelated" };
+    return {
+      valid: false,
+      reason: "No name returned by Apollo",
+      entityMatch: "unrelated",
+      confidence: "low",
+    };
   }
   if (person.linkedin_url && !isValidLinkedInUrl(person.linkedin_url)) {
-    return { valid: false, reason: `Invalid LinkedIn URL: ${person.linkedin_url}`, entityMatch: "unrelated" };
+    return {
+      valid: false,
+      reason: `Invalid LinkedIn URL: ${person.linkedin_url}`,
+      entityMatch: "unrelated",
+      confidence: "low",
+    };
   }
 
   const currentJobs = person.employment_history
@@ -128,17 +178,24 @@ Reply JSON ONLY:
 
     const parsed = extractJson<{ valid: boolean; reason: string; entityMatch: string }>(text, "object");
     if (parsed) {
+      const entityMatch = (parsed.entityMatch ?? "unrelated") as EntityMatch;
       return {
         valid: Boolean(parsed.valid),
         reason: String(parsed.reason ?? ""),
-        entityMatch: (parsed.entityMatch ?? "unrelated") as ValidationResult["entityMatch"],
+        entityMatch,
+        confidence: confidenceFromEntityMatch(entityMatch),
       };
     }
   } catch (error) {
     logger.warn(`[ai] validatePersonAtCompany failed: ${error instanceof Error ? error.message : "unknown"}`);
   }
 
-  return { valid: true, reason: "AI validation inconclusive — allowing", entityMatch: "exact" };
+  return {
+    valid: true,
+    reason: "AI validation inconclusive — allowing",
+    entityMatch: "exact",
+    confidence: confidenceFromEntityMatch("exact"),
+  };
 }
 
 // ─── 3. Score & rank revealed candidates ───

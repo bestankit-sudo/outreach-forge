@@ -1,5 +1,6 @@
 export {
   scoreSearchCandidates,
+  scoreSearchCandidatesDetailed,
   validatePersonAtCompany,
   scoreRevealedCandidates,
   validateDataQuality,
@@ -7,6 +8,7 @@ export {
   decideMerge,
   generateOutreachBrief,
   generateCompanySummary,
+  confidenceFromEntityMatch,
 } from "./gates.js";
 export type {
   Confidence,
@@ -15,6 +17,7 @@ export type {
   ValidationResult,
   DisambiguationResult,
   PreliminaryScore,
+  ScoreCandidatesResult,
   CandidateScore,
   DataQualityResult,
   MergeAction,
