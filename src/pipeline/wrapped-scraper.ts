@@ -13,6 +13,17 @@ type Deps = {
 export class WrappedScraper {
   constructor(private readonly d: Deps) {}
 
+  /** Best-effort audit log — a write failure must never abort the scrape
+   *  (the Extractions schema can differ across backends). */
+  private async audit(input: Parameters<ExtractionsDb["create"]>[0]): Promise<void> {
+    if (!this.d.extractions) return;
+    try {
+      await this.d.extractions.create(input);
+    } catch {
+      /* audit best-effort */
+    }
+  }
+
   async scrape(url: string): Promise<WebsiteScrapeResult> {
     if (this.d.dryRun) {
       return {
@@ -26,22 +37,20 @@ export class WrappedScraper {
 
     const result = await scrapeWebsite(url);
 
-    if (this.d.extractions) {
-      await this.d.extractions.create({
-        title: `Website scrape: ${url}`,
-        type: "company",
-        source: "website_scrape",
-        status: result.fetched ? "accepted" : "rejected",
-        creditsUsed: 0,
-        sourceNotes: result.sourceNotes,
-        rawData: JSON.stringify({
-          fetched: result.fetched,
-          socials: result.socials,
-          businessEmail: result.businessEmail,
-          contactFormUrl: result.contactFormUrl,
-        }),
-      });
-    }
+    await this.audit({
+      title: `Website scrape: ${url}`,
+      type: "company",
+      source: "website_scrape",
+      status: result.fetched ? "accepted" : "rejected",
+      creditsUsed: 0,
+      sourceNotes: result.sourceNotes,
+      rawData: JSON.stringify({
+        fetched: result.fetched,
+        socials: result.socials,
+        businessEmail: result.businessEmail,
+        contactFormUrl: result.contactFormUrl,
+      }),
+    });
 
     return result;
   }
